@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 libpulsar = { path = "libpulsar" }
-wgpu = { version = "0.19.4", features = ["dx12", "metal"] }
+wgpu = { version = "24.0.1", features = ["dx12", "metal"] }
 winit = "0.29"
 glam = "0.24"
 pollster = "0.3"
