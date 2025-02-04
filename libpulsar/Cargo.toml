@@ -1,0 +1,15 @@
+[package]
+name = "libpulsar"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+wgpu = { version = "0.19.4", features = ["dx12", "metal"] }
+winit = "0.29"
+glam = "0.24"
+pollster = "0.3"
+bytemuck = { version = "1.14", features = ["derive"] }
+log = "0.4"
+gltf = "1.3"
+futures = "0.3"
+raw-window-handle = "0.6.2"
