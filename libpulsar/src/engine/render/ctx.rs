@@ -10,105 +10,78 @@ pub enum ContextError {
     SurfaceCreationFailure(#[from] wgpu::CreateSurfaceError),
 }
 
-// This WGSL shader generates a cube procedurally and rotates it around the Y axis.
-// A uniform (u.time) is used as the rotation angle. After rotation, a simple
-// perspective projection is applied (dividing x,y by z) to produce clip-space coordinates.
+/// This WGSL shader generates a cube procedurally and rotates it around the Y axis.
+/// A uniform (u.time) is used as the rotation angle. After rotation, a simple
+/// perspective projection is applied (dividing x,y by z) to produce clip-space coordinates.
 const CUBE_SHADER: &str = r#"
-struct Uniforms {
-    time: f32,
-    // pad to 16 bytes (uniforms require 16-byte alignment)
-    padding0: f32,
-    padding1: f32,
-    padding2: f32,
+struct VertexOutput {
+    @builtin(position) position: vec4<f32>,
+    @location(0) uv: vec2<f32>,
 };
 
-@group(0) @binding(0)
-var<uniform> u: Uniforms;
-
-// Returns a rotation matrix about the Y axis.
-fn rotationY(angle: f32) -> mat3x3<f32> {
-    let c = cos(angle);
-    let s = sin(angle);
-    return mat3x3<f32>(
-        vec3<f32>( c, 0.0, s),
-        vec3<f32>(0.0, 1.0, 0.0),
-        vec3<f32>(-s, 0.0, c)
-    );
-}
-
 @vertex
-fn vs_main(@builtin(vertex_index) vid: u32) -> @builtin(position) vec4<f32> {
-    // We generate 36 vertices (6 faces * 6 vertices per face)
-    let face: u32 = vid / 6u;     // which face (0..5)
-    let corner: u32 = vid % 6u;   // which corner within that face
-
-    // Offsets for the two triangles that make up a face:
-    // (these are in a 2D space, later used to compute positions on the face)
-    var offsets = array<vec2<f32>, 6>(
+fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
+    let vertices = array<vec2<f32>, 6>(
         vec2<f32>(-1.0, -1.0),
         vec2<f32>( 1.0, -1.0),
         vec2<f32>( 1.0,  1.0),
+        vec2<f32>(-1.0, -1.0),
         vec2<f32>( 1.0,  1.0),
         vec2<f32>(-1.0,  1.0),
-        vec2<f32>(-1.0, -1.0)
     );
+    
+    var output: VertexOutput;
+    output.position = vec4<f32>(vertices[vertex_index], 0.0, 1.0);
+    output.uv = vertices[vertex_index] * 0.5 + 0.5;
+    return output;
+}
 
-    var center: vec3<f32>;
-    var uvec: vec3<f32>;
-    var vvec: vec3<f32>;
-
-    // Define each face of the cube (cube of side length 1 centered at origin)
-    if (face == 0u) {
-        // Front face (z = +0.5)
-        center = vec3<f32>(0.0, 0.0, 0.5);
-        uvec = vec3<f32>(0.5, 0.0, 0.0);
-        vvec = vec3<f32>(0.0, 0.5, 0.0);
-    } else if (face == 1u) {
-        // Back face (z = -0.5)
-        center = vec3<f32>(0.0, 0.0, -0.5);
-        uvec = vec3<f32>(-0.5, 0.0, 0.0);
-        vvec = vec3<f32>(0.0, 0.5, 0.0);
-    } else if (face == 2u) {
-        // Right face (x = +0.5)
-        center = vec3<f32>(0.5, 0.0, 0.0);
-        uvec = vec3<f32>(0.0, 0.0, -0.5);
-        vvec = vec3<f32>(0.0, 0.5, 0.0);
-    } else if (face == 3u) {
-        // Left face (x = -0.5)
-        center = vec3<f32>(-0.5, 0.0, 0.0);
-        uvec = vec3<f32>(0.0, 0.0, 0.5);
-        vvec = vec3<f32>(0.0, 0.5, 0.0);
-    } else if (face == 4u) {
-        // Top face (y = +0.5)
-        center = vec3<f32>(0.0, 0.5, 0.0);
-        uvec = vec3<f32>(0.5, 0.0, 0.0);
-        vvec = vec3<f32>(0.0, 0.0, -0.5);
-    } else {
-        // Bottom face (y = -0.5)
-        center = vec3<f32>(0.0, -0.5, 0.0);
-        uvec = vec3<f32>(0.5, 0.0, 0.0);
-        vvec = vec3<f32>(0.0, 0.0, 0.5);
+fn drawSpaceship(uv: vec2<f32>) -> vec4<f32> {
+    // Center and scale UV coordinates
+    var p = uv - vec2<f32>(0.5);
+    p = p * 2.0;
+    
+    // Ship body shape
+    var ship = 0.0;
+    
+    // Main body (triangle)
+    let bodyDist = abs(p.x) + p.y - 0.2;
+    if (bodyDist < 0.1) {
+        ship = 1.0;
     }
-
-    let off = offsets[corner];
-    var pos = center + off.x * uvec + off.y * vvec;
-
-    // Apply a rotation about the Y axis using the uniform time.
-    let rot = rotationY(u.time);
-    pos = rot * pos;
-
-    // Translate the cube so it is in front of the camera.
-    pos = pos + vec3<f32>(0.0, 0.0, 2.0);
-
-    // Simple perspective projection: divide x and y by z.
-    let projected = vec2<f32>(pos.x / pos.z, pos.y / pos.z);
-    return vec4<f32>(projected, 0.0, 1.0);
+    
+    // Wings
+    let wingDist = abs(abs(p.x) - 0.3) + abs(p.y + 0.1) - 0.1;
+    if (wingDist < 0.1) {
+        ship = 1.0;
+    }
+    
+    // Cockpit
+    let cockpitDist = length(p - vec2<f32>(0.0, -0.1)) - 0.1;
+    if (cockpitDist < 0.05) {
+        ship = 0.8;  // Slightly transparent for cockpit
+    }
+    
+    // Engine glow
+    let engineDist = length(p - vec2<f32>(0.0, 0.3)) - 0.15;
+    let glow = smoothstep(0.2, 0.0, engineDist);
+    
+    // Colors
+    var color = vec3<f32>(0.0);
+    if (ship > 0.0) {
+        // Ship body color (silver-white)
+        color = vec3<f32>(0.8, 0.8, 0.9);
+    }
+    
+    // Add engine glow (orange-red)
+    color = color + vec3<f32>(1.0, 0.3, 0.1) * glow;
+    
+    return vec4<f32>(color, ship + glow * 0.5);
 }
 
 @fragment
-fn fs_main() -> @location(0) vec4<f32> {
-    // Output a fixed color.
-    return vec4<f32>(0.7, 0.7, 0.9, 1.0);
+fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
+    return drawSpaceship(uv);
 }
 "#;
 
