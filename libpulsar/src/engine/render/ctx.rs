@@ -1,9 +1,10 @@
+
 use std::borrow::Cow;
 use std::sync::Arc;
 use std::time::Instant;
 use thiserror::Error;
 use winit::window::Window;
-
+use futures::executor::block_on;
 #[derive(Debug, Error)]
 pub enum ContextError {
     #[error("Failed to create WGPU surface: {0}")]
@@ -14,75 +15,102 @@ pub enum ContextError {
 /// A uniform (u.time) is used as the rotation angle. After rotation, a simple
 /// perspective projection is applied (dividing x,y by z) to produce clip-space coordinates.
 const CUBE_SHADER: &str = r#"
-struct VertexOutput {
-    @builtin(position) position: vec4<f32>,
-    @location(0) uv: vec2<f32>,
+// Uniform block containing time and the current aspect ratio.
+// (The extra two padding floats ensure 16-byte alignment.)
+struct Uniforms {
+    time: f32,
+    aspect: f32,
+    padding0: f32,
+    padding1: f32,
 };
 
-@vertex
-fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
-    let vertices = array<vec2<f32>, 6>(
-        vec2<f32>(-1.0, -1.0),
-        vec2<f32>( 1.0, -1.0),
-        vec2<f32>( 1.0,  1.0),
-        vec2<f32>(-1.0, -1.0),
-        vec2<f32>( 1.0,  1.0),
-        vec2<f32>(-1.0,  1.0),
+@group(0) @binding(0)
+var<uniform> u: Uniforms;
+
+// Rotation around the X axis (tilt)
+fn rotationX(angle: f32) -> mat3x3<f32> {
+    let c = cos(angle);
+    let s = sin(angle);
+    return mat3x3<f32>(
+        vec3<f32>(1.0, 0.0, 0.0),
+        vec3<f32>(0.0, c, -s),
+        vec3<f32>(0.0, s,  c)
     );
-    
-    var output: VertexOutput;
-    output.position = vec4<f32>(vertices[vertex_index], 0.0, 1.0);
-    output.uv = vertices[vertex_index] * 0.5 + 0.5;
-    return output;
 }
 
-fn drawSpaceship(uv: vec2<f32>) -> vec4<f32> {
-    // Center and scale UV coordinates
-    var p = uv - vec2<f32>(0.5);
-    p = p * 2.0;
-    
-    // Ship body shape
-    var ship = 0.0;
-    
-    // Main body (triangle)
-    let bodyDist = abs(p.x) + p.y - 0.2;
-    if (bodyDist < 0.1) {
-        ship = 1.0;
-    }
-    
-    // Wings
-    let wingDist = abs(abs(p.x) - 0.3) + abs(p.y + 0.1) - 0.1;
-    if (wingDist < 0.1) {
-        ship = 1.0;
-    }
-    
-    // Cockpit
-    let cockpitDist = length(p - vec2<f32>(0.0, -0.1)) - 0.1;
-    if (cockpitDist < 0.05) {
-        ship = 0.8;  // Slightly transparent for cockpit
-    }
-    
-    // Engine glow
-    let engineDist = length(p - vec2<f32>(0.0, 0.3)) - 0.15;
-    let glow = smoothstep(0.2, 0.0, engineDist);
-    
-    // Colors
-    var color = vec3<f32>(0.0);
-    if (ship > 0.0) {
-        // Ship body color (silver-white)
-        color = vec3<f32>(0.8, 0.8, 0.9);
-    }
-    
-    // Add engine glow (orange-red)
-    color = color + vec3<f32>(1.0, 0.3, 0.1) * glow;
-    
-    return vec4<f32>(color, ship + glow * 0.5);
+// Rotation around the Y axis (spinning)
+fn rotationY(angle: f32) -> mat3x3<f32> {
+    let c = cos(angle);
+    let s = sin(angle);
+    return mat3x3<f32>(
+        vec3<f32>( c, 0.0, s),
+        vec3<f32>(0.0, 1.0, 0.0),
+        vec3<f32>(-s, 0.0, c)
+    );
 }
 
+// Define the eight cube vertices (a unit cube centered at the origin)
+const offsets: array<vec3<f32>, 8> = array<vec3<f32>, 8>(
+    vec3<f32>(-0.5, -0.5, -0.5),
+    vec3<f32>( 0.5, -0.5, -0.5),
+    vec3<f32>( 0.5,  0.5, -0.5),
+    vec3<f32>(-0.5,  0.5, -0.5),
+    vec3<f32>(-0.5, -0.5,  0.5),
+    vec3<f32>( 0.5, -0.5,  0.5),
+    vec3<f32>( 0.5,  0.5,  0.5),
+    vec3<f32>(-0.5,  0.5,  0.5)
+);
+
+// Indices for the 12 triangles that form the six faces of the cube.
+const indices: array<u32, 36> = array<u32, 36>(
+    0, 1, 2, 2, 3, 0, // Front face
+    4, 5, 6, 6, 7, 4, // Back face
+    0, 1, 5, 5, 4, 0, // Bottom face
+    2, 3, 7, 7, 6, 2, // Top face
+    0, 3, 7, 7, 4, 0, // Left face
+    1, 2, 6, 6, 5, 1  // Right face
+);
+
+/// Vertex shader
+@vertex
+fn vs_main(@builtin(vertex_index) vid: u32) -> @builtin(position) vec4<f32> {
+    // Look up the vertex position using the index array.
+    let pos = offsets[indices[vid]];
+
+    // Create a dynamic rotation:
+    // rotY rotates over time, while rotX is fixed (45° tilt).
+    let rotY = rotationY(u.time );
+    let rotX = rotationX(u.time / 1.5 ); 
+
+    // Combine the rotations: first rotate around Y, then tilt with X.
+    var transformedPos = rotX * (rotY * pos);
+
+    // Translate the cube along the Z axis so it appears in front of the camera.
+    transformedPos = transformedPos + vec3<f32>(0.0, 0.0, 2.0);
+
+    // Apply a simple perspective projection:
+    // Divide x and y by z, and correct the x coordinate for the aspect ratio.
+    let projected = vec2<f32>(
+        (transformedPos.x / transformedPos.z) * (1.0 / u.aspect),
+        transformedPos.y / transformedPos.z
+    );
+    return vec4<f32>(projected, 0.0, 1.0);
+}
+
+/// Fragment shader
 @fragment
-fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
-    return drawSpaceship(uv);
+fn fs_main() -> @location(0) vec4<f32> {
+    // The color changes over time. We use sine functions to create smooth oscillation.
+    // sin(u.time) oscillates between -1.0 and 1.0.
+    // Multiplying by 0.5 and adding 0.5 scales the range to 0.0 .. 1.0.
+    let red   = 0.5 * sin(u.time)           + 0.5;
+    let green = 0.5 * sin(u.time + 2.094)     + 0.5; // 2.094 ≈ 2π/3 phase shift
+    let blue  = 0.5 * sin(u.time + 4.188)     + 0.5; // 4.188 ≈ 4π/3 phase shift
+
+    // The resulting vec4 is our final color with full opacity.
+    return vec4<f32>(red, green, blue, 1.0);
 }
+
 "#;
 
 pub struct WgpuCtx<'window> {
@@ -147,7 +175,7 @@ impl<'window> WgpuCtx<'window> {
             label: Some("Uniform Bind Group Layout"),
             entries: &[wgpu::BindGroupLayoutEntry {
                 binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX,
+                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
                     has_dynamic_offset: false,
@@ -216,11 +244,7 @@ impl<'window> WgpuCtx<'window> {
     }
 
     pub fn new_blocking(window: Arc<Window>) -> Result<WgpuCtx<'window>, ContextError> {
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Runtime::new()
-                .unwrap()
-                .block_on(async { WgpuCtx::new(window).await })
-        })
+        block_on(Self::new(window))
     }
 
     pub fn resize(&mut self, new_size: (u32, u32)) {
@@ -231,11 +255,12 @@ impl<'window> WgpuCtx<'window> {
     }
 
     pub fn draw(&mut self) {
-        // Update the uniform buffer with the elapsed time.
         let elapsed = self.start_time.elapsed().as_secs_f32();
-        // Pack into 4 floats (pad to 16 bytes)
-        let time_data = [elapsed, 0.0, 0.0, 0.0];
-        self.queue.write_buffer(&self.uniform_buffer, 0, bytemuck::cast_slice(&time_data));
+        // Compute the aspect ratio from the current surface configuration.
+        let aspect = self.surface_config.width as f32 / self.surface_config.height as f32;
+        // Pack time and aspect into four floats (with two padding zeros).
+        let uniform_data = [elapsed, aspect, 0.0, 0.0];
+        self.queue.write_buffer(&self.uniform_buffer, 0, bytemuck::cast_slice(&uniform_data));
 
         let surface_texture = self
             .surface

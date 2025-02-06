@@ -19,7 +19,9 @@ pub struct App<'window> {
 impl ApplicationHandler for App<'_> {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_none() {
-            let win_attr = Window::default_attributes().with_title("Zenyx");
+            let win_attr = Window::default_attributes()
+            .with_min_inner_size(winit::dpi::PhysicalSize::new(100, 100))
+            .with_title("Zenyx");
             let window = Arc::new(event_loop
                 .create_window(win_attr)
                 .expect("create window err."));
